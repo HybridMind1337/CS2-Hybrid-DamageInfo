@@ -9,56 +9,104 @@ public class DamageEntry
     public bool IsFriendlyFire { get; set; } = false;
 }
 
+public class RecentDamage
+{
+    public int TotalDamage { get; set; } = 0;
+    public int ArmorDamage { get; set; } = 0;
+    public string LastHitgroup { get; set; } = "";
+    public DateTime LastDamageTime { get; set; } = DateTime.MinValue;
+}
+
+public class PlayerData
+{
+    public bool IsDataShown { get; set; } = false;
+    public int VictimKillerSlot { get; set; } = -1;
+    public string? CenterMessage { get; set; } = null;
+    public CounterStrikeSharp.API.Modules.Timers.Timer? CenterTimer { get; set; } = null;
+
+    public Dictionary<int, DamageEntry> GivenDamage { get; } = new();
+    public Dictionary<int, DamageEntry> TakenDamage { get; } = new();
+
+    public Dictionary<int, RecentDamage> RecentDamages { get; } = new();
+}
+
 public class DamageTracker
 {
-    private readonly Dictionary<ulong, Dictionary<ulong, DamageEntry>> _data = new();
-    private readonly Dictionary<ulong, string> _nameCache = new();
+    private readonly Dictionary<int, PlayerData> _data = new();
 
-    public static ulong GetPlayerId(ulong steamId, int slot, bool isBot) =>
-        isBot || steamId == 0 ? (ulong)(slot + 1) * 100_000UL : steamId;
+    private readonly Dictionary<int, string> _nameCache = new();
 
-    public void CacheName(ulong id, string name)
+    public void CacheName(int slot, string name)
     {
-        if (id == 0) return;
-        _nameCache[id] = name;
+        _nameCache[slot] = name;
     }
 
-    public string GetName(ulong id) =>
-        _nameCache.TryGetValue(id, out var name) ? name : $"[unknown]";
+    public string GetName(int slot) =>
+        _nameCache.TryGetValue(slot, out var name) ? name : "Unknown";
 
-    public void RecordDamage(ulong attackerId, ulong targetId, int hp, int armor, int hitgroup, bool friendlyFire)
+    public PlayerData GetOrCreate(int slot)
     {
-        if (attackerId == 0 || targetId == 0 || attackerId == targetId) return;
-
-        if (!_data.ContainsKey(attackerId))
-            _data[attackerId] = new Dictionary<ulong, DamageEntry>();
-
-        if (!_data[attackerId].ContainsKey(targetId))
-            _data[attackerId][targetId] = new DamageEntry { IsFriendlyFire = friendlyFire };
-
-        var entry = _data[attackerId][targetId];
-        entry.DamageHP    += hp;
-        entry.DamageArmor += armor;
-        entry.Hits++;
-
-        string hg = HitgroupToString(hitgroup);
-        if (!string.IsNullOrEmpty(hg))
-            entry.Hitgroups.Add(hg);
+        if (!_data.TryGetValue(slot, out var data))
+        {
+            data = new PlayerData();
+            _data[slot] = data;
+        }
+        return data;
     }
 
-    public Dictionary<ulong, DamageEntry>? GetDamageDealtBy(ulong id) =>
-        _data.TryGetValue(id, out var dict) ? dict : null;
+    public PlayerData? Get(int slot) =>
+        _data.TryGetValue(slot, out var data) ? data : null;
 
-    public Dictionary<ulong, DamageEntry> GetDamageReceivedBy(ulong id)
+    public IEnumerable<KeyValuePair<int, PlayerData>> All() => _data;
+
+    public void RecordDamage(int attackerSlot, int victimSlot, int hp, int armor, string hitgroup, bool friendlyFire)
     {
-        var result = new Dictionary<ulong, DamageEntry>();
-        foreach (var (attackerId, targets) in _data)
-            if (targets.TryGetValue(id, out var entry))
-                result[attackerId] = entry;
-        return result;
+        if (attackerSlot == victimSlot) return;
+
+        var attackerData = GetOrCreate(attackerSlot);
+        if (!attackerData.GivenDamage.TryGetValue(victimSlot, out var given))
+        {
+            given = new DamageEntry { IsFriendlyFire = friendlyFire };
+            attackerData.GivenDamage[victimSlot] = given;
+        }
+        given.DamageHP    += hp;
+        given.DamageArmor += armor;
+        given.Hits++;
+        if (!string.IsNullOrEmpty(hitgroup))
+            given.Hitgroups.Add(hitgroup);
+
+        var victimData = GetOrCreate(victimSlot);
+        if (!victimData.TakenDamage.TryGetValue(attackerSlot, out var taken))
+        {
+            taken = new DamageEntry { IsFriendlyFire = friendlyFire };
+            victimData.TakenDamage[attackerSlot] = taken;
+        }
+        taken.DamageHP    += hp;
+        taken.DamageArmor += armor;
+        taken.Hits++;
+        if (!string.IsNullOrEmpty(hitgroup))
+            taken.Hitgroups.Add(hitgroup);
+
+        if (!attackerData.RecentDamages.TryGetValue(victimSlot, out var recent))
+        {
+            recent = new RecentDamage();
+            attackerData.RecentDamages[victimSlot] = recent;
+        }
+
+        if (DateTime.Now - recent.LastDamageTime <= TimeSpan.FromSeconds(5))
+            recent.TotalDamage += hp;
+        else
+        {
+            recent.TotalDamage  = hp;
+            recent.ArmorDamage  = armor;
+        }
+
+        recent.ArmorDamage    = armor;
+        recent.LastHitgroup   = hitgroup;
+        recent.LastDamageTime = DateTime.Now;
     }
 
-    public void Clear()
+    public void ClearRound()
     {
         _data.Clear();
         _nameCache.Clear();
