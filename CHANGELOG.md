@@ -2,6 +2,20 @@
 
 All notable changes to Hybrid-DamageInfo will be documented here.
 
+## [4.0.0] - 2026-04-26
+### Added
+- Live center HUD on hit — instantly shows HP/Armor dealt and hitgroup while alive
+- `OnTick` listener — HUD stays visible continuously until timer expires
+- Warmup period check — no damage info shown during warmup
+- `OnMapStart` listener — game rules loaded correctly on each map
+- `DisplayDeathInfo` and `DisplayRoundSummary` split into separate methods
+- `IsDataShown` flag — prevents duplicate summary display
+
+### Changed
+- Damage tracking reworked — both GivenDamage and TakenDamage stored per player
+- RecentDamage accumulates hits within 5 seconds for live HUD display
+- Switched back to slot-based tracking for reliability with bots
+
 ## [3.1.0] - 2026-04-26
 ### Fixed
 - Bot support — bots no longer cause missing damage data
