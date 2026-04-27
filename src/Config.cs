@@ -32,9 +32,11 @@ public class HybridDamageInfoConfig : BasePluginConfig
     [JsonPropertyName("ShowFriendlyFire")]
     public bool ShowFriendlyFire { get; set; } = true;
 
+    // Минимални щети за показване в чата (anti-spam)
     [JsonPropertyName("MinDamageToShow")]
     public int MinDamageToShow { get; set; } = 20;
 
+    // При смърт — само 1 кратък ред в чата, детайлите са в round summary
     [JsonPropertyName("CompactDeathMessage")]
     public bool CompactDeathMessage { get; set; } = true;
 }
