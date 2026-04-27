@@ -11,9 +11,9 @@ namespace HybridDamageInfo;
 public class HybridDamageInfoPlugin : BasePlugin, IPluginConfig<HybridDamageInfoConfig>
 {
     public override string ModuleName    => "Hybrid-DamageInfo";
-    public override string ModuleVersion => "4.0.0";
+    public override string ModuleVersion => "5.0.0";
     public override string ModuleAuthor  => "HybridMind";
-    public override string ModuleDescription => "Displays damage info after death and round end.";
+    public override string ModuleDescription => "Clean and compact damage info for CS2.";
 
     public HybridDamageInfoConfig Config { get; set; } = new();
 
@@ -22,7 +22,7 @@ public class HybridDamageInfoPlugin : BasePlugin, IPluginConfig<HybridDamageInfo
     private Dictionary<string, string>       _lang    = new();
     private CCSGameRules?                    _gameRules;
 
-    private string Prefix => $" {ChatColors.Red}[Hybrid-DamageInfo]{ChatColors.Default}";
+    private string Prefix => $" {ChatColors.Red}[DI]{ChatColors.Default}";
 
     public void OnConfigParsed(HybridDamageInfoConfig config)
     {
@@ -57,15 +57,16 @@ public class HybridDamageInfoPlugin : BasePlugin, IPluginConfig<HybridDamageInfo
         });
     }
 
+    private bool IsWarmup() => _gameRules?.WarmupPeriod ?? false;
+
     private void OnTick()
     {
-        var players = Utilities.GetPlayers()
-            .Where(p => p.IsValid && !p.IsBot && !p.IsHLTV
-                
-                && p.Team > CsTeam.Spectator);
+        if (IsWarmup()) return;
 
-        foreach (var player in players)
+        foreach (var player in Utilities.GetPlayers())
         {
+            if (!player.IsValid || player.IsBot || player.IsHLTV) continue;
+
             var data = _tracker.Get(player.Slot);
             if (data != null && !string.IsNullOrEmpty(data.CenterMessage))
                 player.PrintToCenterHtml(data.CenterMessage);
@@ -80,7 +81,7 @@ public class HybridDamageInfoPlugin : BasePlugin, IPluginConfig<HybridDamageInfo
         if (!File.Exists(path)) return;
 
         try { _lang = JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(path)) ?? new(); }
-        catch (Exception ex) { Console.WriteLine($"[Hybrid-DamageInfo] Lang error: {ex.Message}"); }
+        catch (Exception ex) { Console.WriteLine($"[DI] Lang error: {ex.Message}"); }
     }
 
     private string T(string key) =>
@@ -138,63 +139,48 @@ public class HybridDamageInfoPlugin : BasePlugin, IPluginConfig<HybridDamageInfo
 
     private HookResult OnPlayerHurt(EventPlayerHurt @event, GameEventInfo info)
     {
+        if (IsWarmup()) return HookResult.Continue;
+
         var attacker = @event.Attacker;
         var victim   = @event.Userid;
 
         if (attacker == null || !attacker.IsValid || victim == null || !victim.IsValid)
             return HookResult.Continue;
 
-        if (attacker.Slot == victim.Slot)
-            return HookResult.Continue;
+        if (attacker.Slot == victim.Slot) return HookResult.Continue;
 
         if (!Config.ShowBotDamage && (attacker.IsBot || victim.IsBot))
             return HookResult.Continue;
 
         bool friendlyFire = attacker.TeamNum == victim.TeamNum;
-        if (friendlyFire && !Config.ShowFriendlyFire)
-            return HookResult.Continue;
-
-        if (_gameRules != null && _gameRules.WarmupPeriod)
-            return HookResult.Continue;
+        if (friendlyFire && !Config.ShowFriendlyFire) return HookResult.Continue;
 
         _tracker.CacheName(attacker.Slot, attacker.PlayerName);
         _tracker.CacheName(victim.Slot,   victim.PlayerName);
 
-        string hitgroup = DamageTracker.HitgroupToString(@event.Hitgroup);
+        _tracker.RecordDamage(attacker.Slot, victim.Slot, @event.DmgHealth, @event.DmgArmor, @event.Hitgroup, friendlyFire);
 
-        _tracker.RecordDamage(attacker.Slot, victim.Slot, @event.DmgHealth, @event.DmgArmor, hitgroup, friendlyFire);
-
-        if (!attacker.IsBot && Config.ShowCenterHUD)
-        {
-            var attackerPref = _prefs.Get(attacker.SteamID);
-            if (attackerPref.HudEnabled)
-                ShowLiveCenterHud(attacker, victim, @event.DmgHealth, @event.DmgArmor, hitgroup);
-        }
-
-        if (Config.ShowConsoleLog && !attacker.IsBot)
-        {
-            string ffTag = friendlyFire ? " [FF]" : "";
-            attacker.PrintToConsole($"[Hybrid-DamageInfo]{ffTag} {victim.PlayerName} — {@event.DmgHealth} HP / {@event.DmgArmor} Armor [{hitgroup}]");
-        }
+        if (!attacker.IsBot && Config.ShowCenterHUD && _prefs.Get(attacker.SteamID).HudEnabled)
+            ShowLiveHud(attacker, victim.PlayerName, attacker.Slot, victim.Slot, friendlyFire);
 
         return HookResult.Continue;
     }
 
-    private void ShowLiveCenterHud(CCSPlayerController attacker, CCSPlayerController victim, int dmgHp, int dmgArmor, string hitgroup)
+    private void ShowLiveHud(CCSPlayerController attacker, string victimName, int attackerSlot, int victimSlot, bool ff)
     {
-        var data       = _tracker.GetOrCreate(attacker.Slot);
-        var recent     = data.RecentDamages.TryGetValue(victim.Slot, out var r) ? r : null;
-        int totalDmg   = recent?.TotalDamage ?? dmgHp;
-        string ffTag   = attacker.TeamNum == victim.TeamNum ? " <font color='#ffcc00'>[FF]</font>" : "";
+        var data   = _tracker.GetOrCreate(attackerSlot);
+        var recent = data.RecentDamages.TryGetValue(victimSlot, out var r) ? r : null;
+        if (recent == null) return;
+
+        string ffTag   = ff ? " <font color='#ffcc00'>[FF]</font>" : "";
+        string hgTag   = !string.IsNullOrEmpty(recent.LastHitgroup) ? $"  <font color='#aaaaaa'>[{recent.LastHitgroup}]</font>" : "";
 
         data.CenterTimer?.Kill();
         data.CenterTimer = null;
 
         data.CenterMessage =
-            $"<b>{victim.PlayerName}</b>{ffTag}<br>" +
-            $"<font color='#ff4444'>{totalDmg} HP</font> / " +
-            $"<font color='#4488ff'>{dmgArmor} Armor</font><br>" +
-            $"<font color='#aaaaaa'>[{hitgroup}]</font>";
+            $"<font color='#ffffff'><b>{victimName}</b></font>{ffTag}<br>" +
+            $"<font color='#ff4444'>-{recent.TotalDamage} HP</font>{hgTag}";
 
         data.CenterTimer = AddTimer(Config.HUDDisplaySeconds, () =>
         {
@@ -205,10 +191,10 @@ public class HybridDamageInfoPlugin : BasePlugin, IPluginConfig<HybridDamageInfo
 
     private HookResult OnPlayerDeath(EventPlayerDeath @event, GameEventInfo info)
     {
+        if (IsWarmup()) return HookResult.Continue;
+
         var victim = @event.Userid;
         if (victim == null || !victim.IsValid) return HookResult.Continue;
-
-        if (_gameRules != null && _gameRules.WarmupPeriod) return HookResult.Continue;
 
         var attacker = @event.Attacker;
         var data     = _tracker.GetOrCreate(victim.Slot);
@@ -226,7 +212,7 @@ public class HybridDamageInfoPlugin : BasePlugin, IPluginConfig<HybridDamageInfo
         if (data == null || data.IsDataShown) return;
 
         data.IsDataShown = true;
-        var pref         = _prefs.Get(victim.SteamID);
+        var pref = _prefs.Get(victim.SteamID);
 
         var takenDamage = data.TakenDamage
             .Where(e => e.Value.DamageHP >= Config.MinDamageToShow)
@@ -238,100 +224,66 @@ public class HybridDamageInfoPlugin : BasePlugin, IPluginConfig<HybridDamageInfo
             .OrderByDescending(e => e.Value.DamageHP)
             .ToList();
 
+        // ── Chat — 1 компактен ред ────────────────────────────────────────
         if (Config.ShowChatMessage && pref.ChatEnabled)
         {
-            if (Config.CompactDeathMessage)
+            var killer = takenDamage.FirstOrDefault();
+            if (killer.Value != null)
             {
-                var killer = takenDamage.FirstOrDefault();
-                if (killer.Value != null)
-                {
-                    string name   = _tracker.GetName(killer.Key);
-                    string ffTag  = killer.Value.IsFriendlyFire ? $" {ChatColors.Yellow}[FF]{ChatColors.Default}" : "";
-                    string hitStr = ChatHitgroupSummary(killer.Value);
-                    victim.PrintToChat(
-                        $"{Prefix}{ffTag} {ChatColors.LightRed}{name}{ChatColors.Default} dealt " +
-                        $"{ChatColors.Yellow}{killer.Value.DamageHP} HP{ChatColors.Default} / " +
-                        $"{ChatColors.LightBlue}{killer.Value.DamageArmor} Armor{ChatColors.Default} " +
-                        $"({killer.Value.Hits} hit(s)){hitStr}");
-                }
-
-                if (givenDamage.Count > 0)
-                {
-                    int totalHp = givenDamage.Sum(e => e.Value.DamageHP);
-                    victim.PrintToChat(
-                        $"{Prefix} You dealt {ChatColors.Yellow}{totalHp} HP{ChatColors.Default} " +
-                        $"across {ChatColors.Green}{givenDamage.Count} player(s){ChatColors.Default}" +
-                        $" — details in round summary");
-                }
+                string name  = _tracker.GetName(killer.Key);
+                string hs    = killer.Value.Headshot ? $" {ChatColors.Yellow}[HS]{ChatColors.Default}" : "";
+                string ff    = killer.Value.IsFriendlyFire ? $" {ChatColors.Yellow}[FF]{ChatColors.Default}" : "";
+                victim.PrintToChat(
+                    $"{Prefix}{ff} ☠ {ChatColors.LightRed}{name}{ChatColors.Default} " +
+                    $"{ChatColors.Yellow}{killer.Value.DamageHP} HP{ChatColors.Default} · " +
+                    $"{killer.Value.Hits} hit(s){hs}");
             }
-            else
-            {
-                foreach (var (slot, entry) in takenDamage)
-                {
-                    string name   = _tracker.GetName(slot);
-                    string ffTag  = entry.IsFriendlyFire ? $" {ChatColors.Yellow}[FF]{ChatColors.Default}" : "";
-                    string hitStr = ChatHitgroupSummary(entry);
-                    victim.PrintToChat(
-                        $"{Prefix}{ffTag} {ChatColors.LightRed}{name}{ChatColors.Default} dealt " +
-                        $"{ChatColors.Yellow}{entry.DamageHP} HP{ChatColors.Default} / " +
-                        $"{ChatColors.LightBlue}{entry.DamageArmor} Armor{ChatColors.Default} " +
-                        $"({entry.Hits} hit(s)){hitStr}");
-                }
 
-                foreach (var (slot, entry) in givenDamage)
-                {
-                    string name      = _tracker.GetName(slot);
-                    int    remaining = GetRemainingHp(slot);
-                    string hitStr    = ChatHitgroupSummary(entry);
-                    victim.PrintToChat(
-                        $"{Prefix} You dealt {ChatColors.Yellow}{entry.DamageHP} HP{ChatColors.Default} / " +
-                        $"{ChatColors.LightBlue}{entry.DamageArmor} Armor{ChatColors.Default} to " +
-                        $"{ChatColors.Green}{name}{ChatColors.Default} " +
-                        $"({entry.Hits} hit(s)){hitStr} {ChatColors.Default}— " +
-                        $"{ChatColors.Red}{remaining} HP left{ChatColors.Default}");
-                }
+            if (givenDamage.Count > 0)
+            {
+                int totalHp = givenDamage.Sum(e => e.Value.DamageHP);
+                string targets = string.Join(" · ", givenDamage.Select(e =>
+                    $"{ChatColors.Green}{_tracker.GetName(e.Key)}{ChatColors.Default} " +
+                    $"{ChatColors.Yellow}{e.Value.DamageHP}{ChatColors.Default}HP"));
+                victim.PrintToChat($"{Prefix} ▸ {targets}");
             }
         }
 
+        // ── Death HUD ─────────────────────────────────────────────────────
         if (Config.ShowCenterHUD && pref.HudEnabled)
         {
             var lines = new List<string>();
 
             if (takenDamage.Count > 0)
             {
-                lines.Add($"<b>{T("received.header")}</b>");
-                foreach (var (slot, entry) in takenDamage)
-                {
-                    string name   = _tracker.GetName(slot);
-                    string ffTag  = entry.IsFriendlyFire ? " <font color='#ffcc00'>[FF]</font>" : "";
-                    string hitStr = HudHitgroupSummary(entry);
-                    lines.Add($"{name}{ffTag}: <b>{entry.DamageHP} HP</b> / {entry.DamageArmor} Armor ({entry.Hits} hits){hitStr}");
-                }
+                var killer = takenDamage.First();
+                string name = _tracker.GetName(killer.Key);
+                string hs   = killer.Value.Headshot ? " <font color='#ffdd00'>★ HS</font>" : "";
+                string ff   = killer.Value.IsFriendlyFire ? " <font color='#ffcc00'>[FF]</font>" : "";
+                lines.Add($"<font color='#ff4444'>☠</font> <b>{name}</b>{ff} — {killer.Value.DamageHP} HP · {killer.Value.Hits} hit(s){hs}");
             }
 
             if (givenDamage.Count > 0)
             {
-                lines.Add($"<b>{T("dealt.header")}</b>");
-                foreach (var (slot, entry) in givenDamage)
+                string targets = string.Join(" · ", givenDamage.Take(4).Select(e =>
                 {
-                    string name      = _tracker.GetName(slot);
-                    int    remaining = GetRemainingHp(slot);
-                    string hitStr    = HudHitgroupSummary(entry);
-                    lines.Add($"{name}: <b>{entry.DamageHP} HP</b> / {entry.DamageArmor} Armor ({entry.Hits} hits){hitStr} — {remaining} HP left");
-                }
+                    int remaining = GetRemainingHp(e.Key);
+                    string name   = _tracker.GetName(e.Key);
+                    return $"<b>{name}</b> {e.Value.DamageHP}→{remaining}HP";
+                }));
+                lines.Add($"<font color='#44aaff'>▸</font> {targets}");
             }
 
             if (lines.Count > 0)
             {
-                var deathData      = _tracker.GetOrCreate(victim.Slot);
-                deathData.CenterTimer?.Kill();
-                deathData.CenterTimer  = null;
-                deathData.CenterMessage = string.Join("<br>", lines);
+                data.CenterTimer?.Kill();
+                data.CenterTimer   = null;
+                data.CenterMessage = string.Join("<br>", lines);
 
-                deathData.CenterTimer = AddTimer(Config.HUDDisplaySeconds, () =>
+                data.CenterTimer = AddTimer(Config.HUDDisplaySeconds, () =>
                 {
-                    deathData.CenterMessage = null;
-                    deathData.CenterTimer   = null;
+                    data.CenterMessage = null;
+                    data.CenterTimer   = null;
                 });
             }
         }
@@ -339,32 +291,27 @@ public class HybridDamageInfoPlugin : BasePlugin, IPluginConfig<HybridDamageInfo
 
     private HookResult OnRoundEnd(EventRoundEnd @event, GameEventInfo info)
     {
-        if (!Config.ShowRoundEndSummary)
+        if (!Config.ShowRoundEndSummary || IsWarmup())
         {
             _tracker.ClearRound();
             return HookResult.Continue;
         }
 
         var players = Utilities.GetPlayers()
-            .Where(p => p.IsValid && !p.IsBot && !p.IsHLTV
-                
-                && p.Team > CsTeam.Spectator)
+            .Where(p => p.IsValid && !p.IsBot && !p.IsHLTV)
             .ToList();
 
         foreach (var player in players)
             DisplayRoundSummary(player);
 
         var leaderboard = new List<(string Name, int TotalDmg)>();
-
         foreach (var player in players)
         {
             var data = _tracker.Get(player.Slot);
             if (data == null) continue;
-
             int total = data.GivenDamage
                 .Where(e => e.Value.DamageHP >= Config.MinDamageToShow)
                 .Sum(e => e.Value.DamageHP);
-
             if (total > 0)
                 leaderboard.Add((player.PlayerName, total));
         }
@@ -372,18 +319,16 @@ public class HybridDamageInfoPlugin : BasePlugin, IPluginConfig<HybridDamageInfo
         if (leaderboard.Count > 0)
         {
             var ranked = leaderboard.OrderByDescending(t => t.TotalDmg).ToList();
+            string board = string.Join("  ", ranked.Take(5).Select((t, i) =>
+            {
+                string medal = i == 0 ? "🥇" : i == 1 ? "🥈" : i == 2 ? "🥉" : $"#{i + 1}";
+                return $"{medal}{ChatColors.Green}{t.Name}{ChatColors.Default} {ChatColors.Yellow}{t.TotalDmg}{ChatColors.Default}HP";
+            }));
+
             foreach (var player in players)
             {
                 if (!_prefs.Get(player.SteamID).SummaryEnabled) continue;
-
-                player.PrintToChat($"{Prefix} {ChatColors.Yellow}{T("leaderboard.header")}");
-                for (int i = 0; i < ranked.Count; i++)
-                {
-                    string medal = i == 0 ? "🥇" : i == 1 ? "🥈" : i == 2 ? "🥉" : $"#{i + 1}";
-                    player.PrintToChat(
-                        $"{Prefix} {medal} {ChatColors.Green}{ranked[i].Name}{ChatColors.Default} — " +
-                        $"{ChatColors.Yellow}{ranked[i].TotalDmg} HP{ChatColors.Default} total");
-                }
+                player.PrintToChat($"{Prefix} {board}");
             }
         }
 
@@ -404,30 +349,18 @@ public class HybridDamageInfoPlugin : BasePlugin, IPluginConfig<HybridDamageInfo
             .OrderByDescending(e => e.Value.DamageHP)
             .ToList();
 
-        var taken = data.TakenDamage
-            .Where(e => e.Value.DamageHP >= Config.MinDamageToShow)
-            .OrderByDescending(e => e.Value.DamageHP)
-            .ToList();
-
-        if (given.Count == 0 && taken.Count == 0) return;
+        if (given.Count == 0) return;
 
         data.IsDataShown = true;
 
-        player.PrintToChat($"{Prefix} {ChatColors.Yellow}{T("summary.header")}");
-
-        foreach (var (slot, entry) in given)
+        string summary = string.Join(" · ", given.Select(e =>
         {
-            string name      = _tracker.GetName(slot);
-            int    remaining = GetRemainingHp(slot);
-            string ffTag     = entry.IsFriendlyFire ? $" {ChatColors.Yellow}[FF]{ChatColors.Default}" : "";
-            string hitStr    = ChatHitgroupSummary(entry);
-            player.PrintToChat(
-                $"{Prefix}{ffTag} → {ChatColors.Green}{name}{ChatColors.Default}: " +
-                $"{ChatColors.Yellow}{entry.DamageHP} HP{ChatColors.Default} / " +
-                $"{ChatColors.LightBlue}{entry.DamageArmor} Armor{ChatColors.Default} " +
-                $"({entry.Hits} hit(s)){hitStr} {ChatColors.Default}— " +
-                $"{ChatColors.Red}{remaining} HP left{ChatColors.Default}");
-        }
+            string name = _tracker.GetName(e.Key);
+            string hs   = e.Value.Headshot ? "★" : "";
+            return $"{ChatColors.Green}{name}{ChatColors.Default} {ChatColors.Yellow}{e.Value.DamageHP}{ChatColors.Default}HP{hs} x{e.Value.Hits}";
+        }));
+
+        player.PrintToChat($"{Prefix} ▸ {summary}");
     }
 
     private HookResult OnRoundStart(EventRoundStart @event, GameEventInfo info)
@@ -442,18 +375,6 @@ public class HybridDamageInfoPlugin : BasePlugin, IPluginConfig<HybridDamageInfo
         if (player != null && player.IsValid)
             _prefs.Remove(player.SteamID);
         return HookResult.Continue;
-    }
-
-    private string ChatHitgroupSummary(DamageEntry entry)
-    {
-        if (!Config.ShowHitgroup || entry.Hitgroups.Count == 0) return "";
-        return $" {ChatColors.Default}[{string.Join(", ", entry.Hitgroups.Distinct())}]";
-    }
-
-    private string HudHitgroupSummary(DamageEntry entry)
-    {
-        if (!Config.ShowHitgroup || entry.Hitgroups.Count == 0) return "";
-        return $" [{string.Join(", ", entry.Hitgroups.Distinct())}]";
     }
 
     private int GetRemainingHp(int slot)
