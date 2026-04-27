@@ -59,7 +59,7 @@ public class PlayerPreferenceManager
         string summary = pref.SummaryEnabled ? On : Off;
 
         return
-            "<b><font color='#ff4444'>Damage Info</font> Settings</b><br>" +
+            "<b><font color='#ff4444'>[Damage Info]</font> Settings</b><br>" +
             "<br>" +
             $"<b>1.</b> Chat messages — {chat}<br>" +
             $"<b>2.</b> HUD display — {hud}<br>" +
