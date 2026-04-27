@@ -139,12 +139,6 @@ To add a new language, copy `en.json`, rename it (e.g. `de.json`) and translate 
 
 ---
 
-## License
-
-Distributed under the [GPL-3.0 License](LICENSE).
-
----
-
 ## Credits
 
 - Inspired by [K4-DamageInfo](https://github.com/KitsuneLab-Development/K4-DamageInfo) by K4ryuu
